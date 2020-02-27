@@ -1,0 +1,77 @@
+- hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - vault.yml
+   
+  tasks:
+  - name: create ec2 instance
+    ec2:
+          aws_access_key: "{{ aws_access_key }}"
+          aws_secret_key: "{{ aws_secret_key }}"
+          key_name: "{{ aws_key_name }}"
+          image: "{{ aws_image_name }}"
+          wait: yes
+          instance_type: t2.micro
+          group_id: "{{ aws_security_group }}"
+          region: ap-south-1
+          count_tag:
+            Name: apacheserver
+          exact_count: 3
+    register: ec2
+
+  - name: Wait for SSH to come up
+    wait_for: 
+      host: "{{ item.public_dns_name }}" 
+      port: 22 
+      delay: 10  
+      timeout: 300
+    loop: "{{ ec2.instances }}"
+
+  - name: Add new instance to host group
+    add_host:
+      hostname: "{{ item.public_ip }}"
+      groupname: aws_ec2
+    loop: "{{ ec2.instances }}"
+
+  - name: Create the ELB and add newly created instances
+    ec2_elb_lb:
+      aws_access_key: "{{ aws_access_key }}"
+      aws_secret_key: "{{ aws_secret_key }}"
+      name: nginx-load-balancer
+      state: present
+      region: ap-south-1
+      zones: 
+        - ap-south-1a
+        - ap-south-1b
+        - ap-south-1c
+      instance_ids:
+        - "{{ item.id }}"
+      listeners:
+        - protocol: http
+          load_balancer_port: 80
+          instance_port: 80
+          proxy_protocol: True
+    with_items: "{{ ec2.tagged_instances }}"
+
+
+  - name: Gather facts from newly created ELB
+    ec2_elb_info:
+      region: ap-south-1
+      aws_access_key: "{{ aws_access_key }}"
+      aws_secret_key: "{{ aws_secret_key }}"
+      names: nginx-load-balancer
+    register: elb_info
+
+  - name: Extract and Display the DNS name of ELB
+    debug:
+      msg: "{{ elb_info.elbs.0.dns_name }}"
+
+- name: Deploy the web app
+  hosts: aws_ec2
+  become: true
+  
+  roles:
+  - app
+
+
